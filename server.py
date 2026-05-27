@@ -319,10 +319,10 @@ class GameState:
         cols  = config["cols"]
         mines = config["mines"]
 
-        if mode == "sabotage":
+        if mode in ("sabotage", "classic"):
             self.boards = {1: Board(rows, cols, mines), 2: Board(rows, cols, mines)}
             self.board  = None
-        else:
+        else:  # coop
             self.board  = Board(rows, cols, mines)
             self.boards = None
 
@@ -336,9 +336,7 @@ class GameState:
             if player_id != 1:
                 return {"result": "invalid", "game_over": False}
             result = self.board.reveal(r, c)
-        elif self.mode == "classic":
-            result = self.board.reveal(r, c)
-        else:  # sabotage
+        else:  # classic or sabotage — each player has their own board
             result = self.boards[player_id].reveal(r, c)
 
         if result == "already_revealed":
@@ -347,18 +345,14 @@ class GameState:
             return self._resolve_loss(player_id)
 
         # Award points for newly revealed safe cells
-        if self.mode == "sabotage":
+        if self.mode in ("sabotage", "classic"):
             self.scores[player_id] = self.boards[player_id].count_safe_revealed()
-        elif self.mode == "classic":
-            total_now  = self.board.count_safe_revealed()
-            prev_total = self.scores[1] + self.scores[2]
-            self.scores[player_id] += total_now - prev_total
         else:  # coop
             total_now  = self.board.count_safe_revealed()
             prev_total = self.scores[1] + self.scores[2]
             self.scores[1] += total_now - prev_total
 
-        completion = self._check_completion()
+        completion = self._check_completion(player_id)
         if completion:
             self.active = False
             return {"result": "ok", **completion}
@@ -373,9 +367,7 @@ class GameState:
             if player_id != 2:
                 return {"result": "invalid"}
             return {"result": self.board.toggle_flag(r, c)}
-        elif self.mode == "classic":
-            return {"result": self.board.toggle_flag(r, c)}
-        else:
+        else:  # classic or sabotage — flag own board
             return {"result": self.boards[player_id].toggle_flag(r, c)}
 
     def handle_sabotage(self, player_id):
@@ -420,27 +412,27 @@ class GameState:
                 "message": f"Player {loser_id} hit a mine! Player {other} wins!",
             }
 
-    def _check_completion(self):
+    def _check_completion(self, player_id=None):
         if self.mode == "sabotage":
             return None  # Sabotage ends only on mine hit
 
+        if self.mode == "classic":
+            # Race: whoever finishes their own board first wins
+            if self.boards[player_id].is_complete():
+                self.active = False
+                return {
+                    "game_over": True, "winner": player_id, "reason": "complete",
+                    "message": f"Player {player_id} cleared the board first and wins the race!",
+                }
+            return None
+
+        # coop — shared board
         if self.board.is_complete():
             self.active = False
-            if self.mode == "coop":
-                return {
-                    "game_over": True, "winner": None, "reason": "complete",
-                    "message": "All safe cells revealed! Both players win!",
-                }
-            else:
-                s1, s2 = self.scores[1], self.scores[2]
-                if s1 > s2:
-                    winner, msg = 1, f"Player 1 wins with {s1} points!"
-                elif s2 > s1:
-                    winner, msg = 2, f"Player 2 wins with {s2} points!"
-                else:
-                    winner, msg = "draw", "It's a draw!"
-                return {"game_over": True, "winner": winner, "reason": "complete",
-                        "message": msg}
+            return {
+                "game_over": True, "winner": None, "reason": "complete",
+                "message": "All safe cells revealed! Both players win!",
+            }
         return None
 
     # ── State serialization ───────────────────────────────────────────────────
@@ -459,11 +451,11 @@ class GameState:
             "sabotage_left": {str(k): v for k, v in self.sabotage_left.items()},
         }
 
-        if self.mode == "sabotage":
+        if self.mode in ("sabotage", "classic"):
             payload["board"] = self.boards[player_id].to_client_view(reveal_all)
             payload["opponent_revealed_count"] = \
                 self.boards[3 - player_id].count_safe_revealed()
-        else:
+        else:  # coop
             payload["board"] = self.board.to_client_view(reveal_all)
 
         return payload
@@ -480,13 +472,11 @@ class Server:
     """
 
     def __init__(self, config=None):
-        # config carries the difficulty setting chosen in main.py
+        # config carries the difficulty and mode chosen in main.py
         self.config      = config or DIFFICULTIES["Easy"]
         self.clients     = {}        # {player_id: socket}
         self.lock        = threading.Lock()
         self.game_state  = None
-        self.mode_votes  = {}        # {player_id: mode_string}
-        self.ready_votes = set()
 
     def start(self):
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -494,8 +484,11 @@ class Server:
         server_sock.bind((HOST, PORT))
         server_sock.listen(2)
 
-        diff = self.config.get("difficulty", "Custom")
-        print(f"Server started — difficulty: {diff}  port: {PORT}")
+        diff     = self.config.get("difficulty", "Custom")
+        mode     = self.config.get("mode", "classic")
+        local_ip = self._get_local_ip()
+        print(f"Server started — mode: {mode}  difficulty: {diff}  port: {PORT}")
+        print(f"Your IP address: {local_ip}")
         print("Share your IP address with the other player.")
 
         pid = 1
@@ -504,9 +497,11 @@ class Server:
             self.clients[pid] = conn
             print(f"Player {pid} connected from {addr}")
             self._send_to(pid, {
-                "type": "welcome",
-                "player_id": pid,
+                "type":       "welcome",
+                "player_id":  pid,
+                "mode":       mode,
                 "difficulty": self.config.get("difficulty", "Easy"),
+                "local_ip":   local_ip,
             })
             t = threading.Thread(
                 target=self._handle_client, args=(pid, conn), daemon=True
@@ -514,8 +509,20 @@ class Server:
             t.start()
             pid += 1
 
-        print("Both players connected!")
+        print("Both players connected! Starting game…")
+        self._start_game()
         threading.Event().wait()   # keep main thread alive
+
+    def _get_local_ip(self):
+        """Get the machine's LAN IP to display in the waiting screen."""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
 
     # ── Per-client receive loop ───────────────────────────────────────────────
 
@@ -542,44 +549,14 @@ class Server:
 
     def _route_message(self, player_id, msg):
         t = msg.get("type")
-        if   t == "mode_select": self._handle_mode_select(player_id, msg)
-        elif t == "ready":       self._handle_ready(player_id)
-        elif t == "move":        self._handle_move(player_id, msg)
-        elif t == "flag":        self._handle_flag(player_id, msg)
-        elif t == "sabotage":    self._handle_sabotage(player_id)
+        if   t == "move":     self._handle_move(player_id, msg)
+        elif t == "flag":     self._handle_flag(player_id, msg)
+        elif t == "sabotage": self._handle_sabotage(player_id)
 
-    # ── Lobby ─────────────────────────────────────────────────────────────────
+    # ── Game start ────────────────────────────────────────────────────────────
 
-    def _handle_mode_select(self, player_id, msg):
-        mode = msg.get("mode")
-        if mode not in ("classic", "coop", "sabotage"):
-            return
-        with self.lock:
-            self.mode_votes[player_id] = mode
-            self._broadcast_lobby_state()
-
-    def _handle_ready(self, player_id):
-        with self.lock:
-            if len(self.mode_votes) == 2:
-                modes = list(self.mode_votes.values())
-                if modes[0] == modes[1]:
-                    self.ready_votes.add(player_id)
-                    if len(self.ready_votes) == 2:
-                        self._start_game(modes[0])
-                        return
-            self._broadcast_lobby_state()
-
-    def _broadcast_lobby_state(self):
-        self._broadcast({
-            "type":     "lobby_state",
-            "p1_mode":  self.mode_votes.get(1),
-            "p2_mode":  self.mode_votes.get(2),
-            "p1_ready": 1 in self.ready_votes,
-            "p2_ready": 2 in self.ready_votes,
-            "difficulty": self.config.get("difficulty", "Easy"),
-        })
-
-    def _start_game(self, mode):
+    def _start_game(self):
+        mode = self.config.get("mode", "classic")
         print(f"Starting {mode} mode at {self.config.get('difficulty', '?')} difficulty")
         self.game_state = GameState(mode, self.config)
         for pid in self.clients:
@@ -668,18 +645,27 @@ class Server:
 # Entry point (when run directly, not via main.py)
 # =============================================================================
 if __name__ == "__main__":
-    # Optional CLI arg: python3 server.py --difficulty Medium
+    # Optional CLI args: python3 server.py --difficulty Medium --mode coop
     config = dict(DIFFICULTIES["Easy"])
     config["difficulty"] = "Easy"
+    config["mode"] = "classic"
 
     args = sys.argv[1:]
     if "--difficulty" in args:
         idx = args.index("--difficulty")
         if idx + 1 < len(args):
-            name = args[idx + 1]
-            if name in DIFFICULTIES:
-                config = dict(DIFFICULTIES[name])
-                config["difficulty"] = name
+            d = args[idx + 1]
+            if d in DIFFICULTIES:
+                config = dict(DIFFICULTIES[d])
+                config["difficulty"] = d
+                config["mode"] = "classic"
+
+    if "--mode" in args:
+        idx = args.index("--mode")
+        if idx + 1 < len(args):
+            m = args[idx + 1]
+            if m in ("classic", "coop", "sabotage"):
+                config["mode"] = m
 
     Server(config).start()
 # References

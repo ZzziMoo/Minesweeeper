@@ -156,9 +156,12 @@ class LauncherWindow(tk.Tk):
 
         # Tracks the chosen difficulty ("Easy" / "Medium" / "Expert")
         self.difficulty_var = tk.StringVar(value="Easy")
+        # Tracks the chosen multiplayer game mode
+        self.mp_mode_var = tk.StringVar(value="classic")
 
         self._build_title()
         self._build_difficulty_panel()
+        self._build_mp_mode_panel()
         self._build_mode_panel()
         self._build_footer()
 
@@ -214,6 +217,45 @@ class LauncherWindow(tk.Tk):
             tk.Label(row, text=detail, font=("Arial", 9),
                      bg=BG, fg="#555555").pack(side="left", padx=6)
 
+    def _build_mp_mode_panel(self):
+        """Radio buttons for the multiplayer game mode (Classic / Co-op / Sabotage)."""
+        outer = tk.Frame(self, bg=BG, relief="raised", bd=3)
+        outer.pack(fill="x", padx=8, pady=4)
+
+        inner = tk.Frame(outer, bg=BG, relief="sunken", bd=2, padx=12, pady=8)
+        inner.pack(fill="x")
+
+        tk.Label(inner, text="Multiplayer Mode", font=("Arial", 11, "bold"),
+                 bg=BG, fg="black").pack(anchor="w", pady=(0, 6))
+
+        options = [
+            ("classic",  "Classic (Race)",
+             "Each player solves their own board.\nFirst to clear it wins!"),
+            ("coop",     "Co-op",
+             "P1 reveals · P2 flags.\nWin together by clearing the board."),
+            ("sabotage", "Sabotage",
+             "Own boards + 3 sabotage charges.\nPlant fake flags on the opponent!"),
+        ]
+        for value, name, detail in options:
+            row = tk.Frame(inner, bg=BG)
+            row.pack(fill="x", pady=2)
+
+            tk.Radiobutton(
+                row,
+                text=name,
+                variable=self.mp_mode_var,
+                value=value,
+                font=("Arial", 11),
+                bg=BG, fg="black",
+                activebackground=BG,
+                selectcolor=BG,
+                width=14, anchor="w",
+            ).pack(side="left")
+
+            tk.Label(row, text=detail, font=("Arial", 9),
+                     bg=BG, fg="#555555", wraplength=200, justify="left",
+                     ).pack(side="left", padx=6)
+
     def _build_mode_panel(self):
         """
         Three buttons: Single Player, Host Game, Join Game.
@@ -268,10 +310,11 @@ class LauncherWindow(tk.Tk):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _get_config(self):
-        """Return (difficulty_name, config_dict) for the selected difficulty."""
+        """Return (difficulty_name, config_dict) for the selected difficulty and mode."""
         name = self.difficulty_var.get()
         cfg  = dict(DIFFICULTIES[name])
         cfg["difficulty"] = name
+        cfg["mode"] = self.mp_mode_var.get()
         return name, cfg
 
     def _watch_process(self, proc, on_done):
@@ -299,18 +342,20 @@ class LauncherWindow(tk.Tk):
 
     def _launch_host(self):
         """
-        Start server.py as a background process (with chosen difficulty),
+        Start server.py as a background process (with chosen difficulty and mode),
         then launch client.py in its own window auto-connected to localhost.
         When the client closes, the server is also stopped.
         """
-        name, _ = self._get_config()
+        name, cfg = self._get_config()
+        mode = cfg["mode"]
         self.iconify()   # minimize launcher (it stays alive)
 
         # Start the game server ──────────────────────────────────────────────
         server_proc = subprocess.Popen(
             [sys.executable,
              os.path.join(_DIR, "server.py"),
-             "--difficulty", name],
+             "--difficulty", name,
+             "--mode", mode],
         )
 
         # Give the server half a second to bind the socket before connecting

@@ -376,143 +376,63 @@ class ConnectScreen(tk.Frame):
 # LobbyScreen — mode selection before the game starts
 # =============================================================================
 class LobbyScreen(tk.Frame):
-    """
-    Both players pick a mode. When they agree, both click Ready to start.
+    """Waiting room shown after connecting — game starts automatically once both players join."""
 
-    Classic  — compete on the same board, score by revealing cells
-    Co-op    — Player 1 reveals, Player 2 flags; clear the board together
-    Sabotage — own boards; use sabotage to plant wrong flags on the opponent
-    """
-
-    MODES = [
-        ("classic",  "Classic",
-         "Compete! Reveal safe cells to\nscore. Click a mine and you lose."),
-        ("coop",     "Co-op",
-         "P1 reveals · P2 flags.\nWin together by clearing the board."),
-        ("sabotage", "Sabotage",
-         "Your own board. Use sabotage\nto plant fake flags on the opponent!"),
-    ]
-
-    def __init__(self, app):
+    def __init__(self, app, mode=None, difficulty=None, local_ip=None):
         super().__init__(app, bg=BG)
         self.app = app
-        self.selected_mode = None
 
-        # ── Title bar area ─────────────────────────────────────────────────
-        title_bar = tk.Frame(self, bg=BG, pady=8)
-        title_bar.pack(fill="x")
-        tk.Label(
-            title_bar, text="Minesweeper — Multiplayer Lobby",
-            font=("Arial", 13, "bold"), bg=BG, fg="black"
-        ).pack()
-        tk.Label(
-            title_bar, text=f"You are Player {app.player_id}",
-            font=("Arial", 11), bg=BG, fg="#333333"
-        ).pack()
-
-        # ── Sunken inner panel ─────────────────────────────────────────────
-        panel = tk.Frame(self, bg=BG, relief="sunken", bd=3)
-        panel.pack(padx=20, pady=8, fill="x")
+        panel = tk.Frame(self, bg=BG, relief="raised", bd=3)
+        panel.pack(padx=30, pady=30)
 
         tk.Label(
-            panel, text="Select a game mode:",
+            panel, text="Minesweeper", font=("Arial", 18, "bold"),
+            bg=BG, fg="black"
+        ).pack(pady=(18, 4))
+
+        tk.Label(
+            panel, text="Multiplayer", font=("Arial", 12),
+            bg=BG, fg="#444444"
+        ).pack(pady=(0, 12))
+
+        tk.Frame(panel, bg=BORDER_DARK, height=2).pack(fill="x", padx=10, pady=4)
+
+        mode_names = {"classic": "Classic (Race)", "coop": "Co-op", "sabotage": "Sabotage"}
+        mode_str   = mode_names.get(mode, mode or "—")
+        tk.Label(
+            panel, text=f"Mode: {mode_str}  |  Difficulty: {difficulty or '—'}",
             font=("Arial", 11, "bold"), bg=BG, fg="black"
         ).pack(pady=(10, 4))
 
-        self.mode_buttons = {}
-        for mode, label, desc in self.MODES:
-            row = tk.Frame(panel, bg=BG, pady=3)
-            row.pack(fill="x", padx=16)
+        tk.Label(
+            panel, text=f"You are Player {app.player_id}",
+            font=("Arial", 11), bg=BG, fg="#333333"
+        ).pack(pady=(0, 10))
 
-            btn = tk.Button(
-                row, text=label,
-                font=("Arial", 11, "bold"),
-                bg=BG, fg="black",
-                relief="raised", bd=3,
-                width=10, pady=3,
-                activebackground="#a0a0a0",
-                command=lambda m=mode: self._select_mode(m)
-            )
-            btn.pack(side="left")
-            self.mode_buttons[mode] = btn
-
+        # Show LAN IP for the host so they can share it with the other player
+        if app.player_id == 1 and local_ip:
+            tk.Frame(panel, bg=BORDER_DARK, height=2).pack(fill="x", padx=10, pady=4)
             tk.Label(
-                row, text=desc,
-                font=("Arial", 9), bg=BG, fg="#333333",
-                justify="left", wraplength=220
-            ).pack(side="left", padx=12)
+                panel, text="Share your IP address with Player 2:",
+                font=("Arial", 10), bg=BG, fg="#333333"
+            ).pack(pady=(8, 2))
+            ip_frame = tk.Frame(panel, bg="#000000", padx=12, pady=6)
+            ip_frame.pack(pady=4)
+            tk.Label(
+                ip_frame, text=local_ip,
+                font=("Courier New", 18, "bold"), bg="#000000", fg="#00ff00"
+            ).pack()
 
-        # ── Status line ────────────────────────────────────────────────────
-        sep = tk.Frame(panel, bg=BORDER_DARK, height=2)
-        sep.pack(fill="x", padx=10, pady=8)
+        tk.Frame(panel, bg=BORDER_DARK, height=2).pack(fill="x", padx=10, pady=8)
 
-        self.status_label = tk.Label(
-            panel, text="Choose a mode above.",
-            font=("Arial", 10), bg=BG, fg="#222222",
-            wraplength=360, justify="center"
+        wait_text = (
+            "Waiting for Player 2 to join…" if app.player_id == 1
+            else "Connected! Game starting soon…"
         )
-        self.status_label.pack(pady=4)
-
-        self.ready_label = tk.Label(
-            panel, text="",
-            font=("Arial", 10), bg=BG, fg="#007700"
-        )
-        self.ready_label.pack()
-
-        # ── Ready button ───────────────────────────────────────────────────
-        self.ready_btn = tk.Button(
-            panel, text="Ready!",
-            font=("Arial", 12, "bold"),
-            bg=BG, fg="black",
-            relief="raised", bd=3,
-            padx=24, pady=6,
-            state="disabled",
-            activebackground="#a0a0a0",
-            command=self._send_ready
-        )
-        self.ready_btn.pack(pady=(8, 14))
-
-    def _select_mode(self, mode):
-        self.selected_mode = mode
-        for m, btn in self.mode_buttons.items():
-            # Sunken = selected, raised = not selected
-            btn.config(relief="sunken" if m == mode else "raised")
-        self.app.net.send({"type": "mode_select", "mode": mode})
-
-    def _send_ready(self):
-        self.app.net.send({"type": "ready"})
-        self.ready_btn.config(state="disabled", text="Waiting…")
-
-    def update_lobby(self, msg):
-        """Called when server sends a lobby_state update."""
-        p1_mode    = msg.get("p1_mode")
-        p2_mode    = msg.get("p2_mode")
-        p1_ready   = msg.get("p1_ready", False)
-        p2_ready   = msg.get("p2_ready", False)
-        difficulty = msg.get("difficulty", "Easy")
-
-        names = {"classic": "Classic", "coop": "Co-op", "sabotage": "Sabotage"}
-        p1_str = names.get(p1_mode, "—")
-        p2_str = names.get(p2_mode, "—")
-        status = f"Difficulty: {difficulty}   •   P1: {p1_str}  |  P2: {p2_str}"
-
-        if p1_mode and p2_mode:
-            if p1_mode == p2_mode:
-                status += f"\n✔ Both chose {p1_str} — click Ready!"
-                my_ready = p1_ready if self.app.player_id == 1 else p2_ready
-                if not my_ready:
-                    self.ready_btn.config(state="normal", text="Ready!")
-            else:
-                status += "\n⚠  Please agree on the same mode."
-                self.ready_btn.config(state="disabled", text="Ready!")
-
-        parts = []
-        if p1_ready:
-            parts.append("Player 1 ✔")
-        if p2_ready:
-            parts.append("Player 2 ✔")
-        self.ready_label.config(text="  ".join(parts))
-        self.status_label.config(text=status)
+        tk.Label(
+            panel, text=wait_text,
+            font=("Arial", 10), bg=BG, fg="#222222"
+        ).pack(pady=(0, 14))
 
 
 # =============================================================================
@@ -718,10 +638,9 @@ class GameScreen(tk.Frame):
         self.app.net.send({"type": "sabotage"})
 
     def _on_face_click(self):
-        """Clicking the smiley face returns to the lobby (useful after game over)."""
+        """Clicking the smiley face returns to the main menu after game over."""
         if self.game_over:
-            self.app.show_lobby_screen()
-        # During gameplay: do nothing (or you could add a forfeit confirm)
+            self.app.show_connect_screen()
 
     def _flash_info(self, text):
         """Temporarily show a hint in the info label."""
@@ -763,6 +682,15 @@ class GameScreen(tk.Frame):
             opp_count = msg.get("opponent_revealed_count", 0)
             self.info_label.config(
                 text=f"Opponent has revealed {opp_count} safe cell(s).",
+                fg="#555555"
+            )
+
+        # Classic race — show each player's progress toward clearing their own board
+        if self.mode == "classic":
+            opp_count  = msg.get("opponent_revealed_count", 0)
+            total_safe = self.rows * self.cols - self.mine_count
+            self.info_label.config(
+                text=f"You: {my_score} / {total_safe} cells  |  Opponent: {opp_count} / {total_safe} cells",
                 fg="#555555"
             )
 
@@ -841,11 +769,11 @@ class GameScreen(tk.Frame):
             f"Final scores:\n"
             f"  Player 1: {scores.get('1', 0)}\n"
             f"  Player 2: {scores.get('2', 0)}\n\n"
-            f"Click the smiley face or press Yes\nto return to the lobby."
+            f"Click the smiley face or press Yes\nto return to the main menu."
         )
 
         if messagebox.askyesno(title, detail, parent=self.app):
-            self.app.show_lobby_screen()
+            self.app.show_connect_screen()
 
 
 # =============================================================================
@@ -863,9 +791,12 @@ class App(tk.Tk):
         self.resizable(False, False)
         self.configure(bg=BG)
 
-        self.player_id     = None
-        self.net           = None
-        self.current_screen = None
+        self.player_id         = None
+        self.net               = None
+        self.current_screen    = None
+        self._lobby_mode       = None
+        self._lobby_difficulty = None
+        self._lobby_local_ip   = None
 
         self.show_connect_screen()
 
@@ -873,7 +804,12 @@ class App(tk.Tk):
         self._switch_screen(ConnectScreen(self))
 
     def show_lobby_screen(self):
-        self._switch_screen(LobbyScreen(self))
+        self._switch_screen(LobbyScreen(
+            self,
+            mode=self._lobby_mode,
+            difficulty=self._lobby_difficulty,
+            local_ip=self._lobby_local_ip,
+        ))
 
     def show_game_screen(self, mode, initial_state):
         self._switch_screen(GameScreen(self, mode, initial_state))
@@ -912,12 +848,11 @@ class App(tk.Tk):
         msg_type = msg.get("type")
 
         if msg_type == "welcome":
-            self.player_id = msg["player_id"]
+            self.player_id         = msg["player_id"]
+            self._lobby_mode       = msg.get("mode")
+            self._lobby_difficulty = msg.get("difficulty")
+            self._lobby_local_ip   = msg.get("local_ip")
             self.show_lobby_screen()
-
-        elif msg_type == "lobby_state":
-            if isinstance(self.current_screen, LobbyScreen):
-                self.current_screen.update_lobby(msg)
 
         elif msg_type == "state":
             if isinstance(self.current_screen, LobbyScreen):
