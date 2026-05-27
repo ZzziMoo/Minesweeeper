@@ -767,8 +767,8 @@ class GameScreen(tk.Frame):
             )
 
         # Render every cell and cache their states for click guards
-        for r in range(self.ROWS):
-            for c in range(self.COLS):
+        for r in range(self.rows):
+            for c in range(self.cols):
                 if r < len(board) and c < len(board[r]):
                     self._cell_states[(r, c)] = board[r][c].get("state", "hidden")
                     self._render_cell(r, c, board[r][c])
