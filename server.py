@@ -144,6 +144,12 @@ class Board:
 
     # ── Mine generation ───────────────────────────────────────────────────────
 
+    def _apply_mines(self, mine_set):
+        """Pre-load a fixed mine layout (used for same-board competitive modes)."""
+        self.mines = set(mine_set)
+        self._precompute_adjacency()
+        self.generated = True
+
     def generate(self, safe_cell):
         """
         Place mines randomly, but guarantee that safe_cell and all its
@@ -320,7 +326,14 @@ class GameState:
         mines = config["mines"]
 
         if mode in ("sabotage", "classic"):
-            self.boards = {1: Board(rows, cols, mines), 2: Board(rows, cols, mines)}
+            # Both players face the exact same mine layout for fairness
+            all_cells   = [(r, c) for r in range(rows) for c in range(cols)]
+            shared_mines = set(random.sample(all_cells, mines))
+            b1 = Board(rows, cols, mines)
+            b2 = Board(rows, cols, mines)
+            b1._apply_mines(shared_mines)
+            b2._apply_mines(shared_mines)
+            self.boards = {1: b1, 2: b2}
             self.board  = None
         else:  # coop
             self.board  = Board(rows, cols, mines)
