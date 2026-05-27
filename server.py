@@ -473,10 +473,11 @@ class Server:
 
     def __init__(self, config=None):
         # config carries the difficulty and mode chosen in main.py
-        self.config      = config or DIFFICULTIES["Easy"]
-        self.clients     = {}        # {player_id: socket}
-        self.lock        = threading.Lock()
-        self.game_state  = None
+        self.config        = config or DIFFICULTIES["Easy"]
+        self.clients       = {}        # {player_id: socket}
+        self.lock          = threading.Lock()
+        self.game_state    = None
+        self.rematch_votes = set()     # players who want to play again
 
     def start(self):
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -552,6 +553,7 @@ class Server:
         if   t == "move":     self._handle_move(player_id, msg)
         elif t == "flag":     self._handle_flag(player_id, msg)
         elif t == "sabotage": self._handle_sabotage(player_id)
+        elif t == "rematch":  self._handle_rematch(player_id)
 
     # ── Game start ────────────────────────────────────────────────────────────
 
@@ -593,6 +595,18 @@ class Server:
             if result["result"] == "ok":
                 self._broadcast_state()
 
+    def _handle_rematch(self, player_id):
+        with self.lock:
+            self.rematch_votes.add(player_id)
+            print(f"Player {player_id} wants a rematch ({len(self.rematch_votes)}/2)")
+            if self.rematch_votes == {1, 2}:
+                self.rematch_votes.clear()
+                print("Both players agreed — starting rematch!")
+                self._start_game()
+            else:
+                # Tell this player to keep waiting
+                self._send_to(player_id, {"type": "rematch_wait"})
+
     # ── Broadcasting ──────────────────────────────────────────────────────────
 
     def _send_state_or_game_over(self, action_result):
@@ -629,6 +643,7 @@ class Server:
 
     def _handle_disconnect(self, player_id):
         print(f"Player {player_id} disconnected.")
+        self.rematch_votes.discard(player_id)
         other = 3 - player_id
         if other in self.clients:
             self._send_to(other, {

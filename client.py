@@ -638,9 +638,9 @@ class GameScreen(tk.Frame):
         self.app.net.send({"type": "sabotage"})
 
     def _on_face_click(self):
-        """Clicking the smiley face returns to the main menu after game over."""
+        """Re-open the result dialog after game over."""
         if self.game_over:
-            self.app.show_connect_screen()
+            self._show_result_dialog()
 
     def _flash_info(self, text):
         """Temporarily show a hint in the info label."""
@@ -737,17 +737,17 @@ class GameScreen(tk.Frame):
         """
         Called when the server declares the game over.
         Shows the full board (mines revealed), changes the smiley face,
-        and pops up a result dialog.
+        and pops up a result dialog with Play Again / Back to Menu options.
         """
         self.game_over = True
-        self.update_state(msg)  # renders the revealed board
+        self._result_dlg = None
+        self.update_state(msg)
 
-        winner = msg.get("winner")
-        reason = msg.get("reason", "")
+        winner  = msg.get("winner")
+        reason  = msg.get("reason", "")
         message = msg.get("message", "Game over!")
         scores  = msg.get("final_scores", {"1": 0, "2": 0})
 
-        # Change the face emoji to reflect the outcome
         if winner == self.player_id:
             self.face_btn.config(text=FACE_WIN)
             title = "You Win!"
@@ -768,12 +768,71 @@ class GameScreen(tk.Frame):
             f"{message}\n\n"
             f"Final scores:\n"
             f"  Player 1: {scores.get('1', 0)}\n"
-            f"  Player 2: {scores.get('2', 0)}\n\n"
-            f"Click the smiley face or press Yes\nto return to the main menu."
+            f"  Player 2: {scores.get('2', 0)}"
         )
 
-        if messagebox.askyesno(title, detail, parent=self.app):
+        self._result_title  = title
+        self._result_detail = detail
+        # Disconnect reason means no rematch is possible
+        self._can_rematch = (reason != "disconnect")
+        self._show_result_dialog()
+
+    def _show_result_dialog(self):
+        """Show (or re-show) the post-game options dialog."""
+        # Avoid stacking duplicate dialogs
+        if self._result_dlg and self._result_dlg.winfo_exists():
+            self._result_dlg.lift()
+            return
+
+        dlg = tk.Toplevel(self.app)
+        self._result_dlg = dlg
+        dlg.title(self._result_title)
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg, text=self._result_title,
+            font=("Arial", 14, "bold"), bg=BG, fg="black"
+        ).pack(pady=(16, 4), padx=24)
+
+        tk.Label(
+            dlg, text=self._result_detail,
+            font=("Arial", 10), bg=BG, fg="black", justify="center"
+        ).pack(padx=24)
+
+        tk.Frame(dlg, bg=BORDER_DARK, height=2).pack(fill="x", padx=16, pady=12)
+
+        btn_row = tk.Frame(dlg, bg=BG)
+        btn_row.pack(pady=(0, 16))
+
+        if self._can_rematch:
+            def play_again():
+                dlg.destroy()
+                self._result_dlg = None
+                self.app.net.send({"type": "rematch"})
+                self._flash_info("Waiting for opponent…")
+
+            tk.Button(
+                btn_row, text="Play Again",
+                font=("Arial", 11, "bold"), bg=BG, fg="black",
+                relief="raised", bd=3, padx=16, pady=6,
+                activebackground="#a0a0a0",
+                command=play_again,
+            ).pack(side="left", padx=10)
+
+        def back_to_menu():
+            dlg.destroy()
+            self._result_dlg = None
             self.app.show_connect_screen()
+
+        tk.Button(
+            btn_row, text="Back to Menu",
+            font=("Arial", 11), bg=BG, fg="black",
+            relief="raised", bd=3, padx=16, pady=6,
+            activebackground="#a0a0a0",
+            command=back_to_menu,
+        ).pack(side="left", padx=10)
 
 
 # =============================================================================
@@ -801,6 +860,9 @@ class App(tk.Tk):
         self.show_connect_screen()
 
     def show_connect_screen(self):
+        if self.net:
+            self.net.disconnect()
+            self.net = None
         self._switch_screen(ConnectScreen(self))
 
     def show_lobby_screen(self):
@@ -859,13 +921,20 @@ class App(tk.Tk):
                 # First state received means the game just started
                 self.show_game_screen(msg.get("mode", "classic"), msg)
             elif isinstance(self.current_screen, GameScreen):
-                self.current_screen.update_state(msg)
+                if self.current_screen.game_over:
+                    # Rematch accepted by both — start a fresh game screen
+                    self.show_game_screen(msg.get("mode", "classic"), msg)
+                else:
+                    self.current_screen.update_state(msg)
+
+        elif msg_type == "rematch_wait":
+            # Opponent hasn't voted yet — just keep showing the "Waiting…" hint
+            pass
 
         elif msg_type == "game_over":
             if isinstance(self.current_screen, GameScreen):
                 self.current_screen.show_game_over(msg)
             else:
-                # Game ended before we reached the game screen (e.g. disconnect in lobby)
                 messagebox.showinfo(
                     "Game Over",
                     msg.get("message", "Game over."),
@@ -873,6 +942,9 @@ class App(tk.Tk):
                 )
 
         elif msg_type == "disconnect":
+            # Ignore if we intentionally disconnected (net is already None)
+            if self.net is None:
+                return
             messagebox.showerror(
                 "Connection Lost",
                 "Lost connection to the server.",
